@@ -6,16 +6,19 @@ import java.util.TreeMap;
 import java.util.Map;
 
 /**
- * Represents coverage data for a single Java class
+ * Represents coverage data for a single Java class.
+ * Also carries the architectural layer it belongs to.
  */
 public class ClassCoverage {
 
-    private String className;        // e.g. com.example.service.UserService
-    private String simpleClassName;  // e.g. UserService
-    private String sourceFile;       // absolute path to .java source file
-    private List<MethodCoverage> methods = new ArrayList<>();
-    private Map<Integer, Boolean> lineCoverageMap = new TreeMap<>(); // line -> covered
-    private List<String> sourceLines = new ArrayList<>(); // raw source lines
+    private String    className;        // e.g. com.example.service.UserService
+    private String    simpleClassName;  // e.g. UserService
+    private String    sourceFile;       // absolute path to .java source file
+    private LayerType layerType = LayerType.UNKNOWN;
+
+    private List<MethodCoverage>    methods        = new ArrayList<>();
+    private Map<Integer, Boolean>   lineCoverageMap = new TreeMap<>();
+    private List<String>            sourceLines    = new ArrayList<>();
 
     public ClassCoverage(String className) {
         this.className = className;
@@ -44,13 +47,15 @@ public class ClassCoverage {
         return (double) getCoveredLineCount() / getTotalLineCount() * 100;
     }
 
-    // Getters & Setters
-    public String getClassName() { return className; }
-    public String getSimpleClassName() { return simpleClassName; }
-    public String getSourceFile() { return sourceFile; }
-    public void setSourceFile(String sourceFile) { this.sourceFile = sourceFile; }
-    public List<MethodCoverage> getMethods() { return methods; }
-    public Map<Integer, Boolean> getLineCoverageMap() { return lineCoverageMap; }
-    public List<String> getSourceLines() { return sourceLines; }
-    public void setSourceLines(List<String> sourceLines) { this.sourceLines = sourceLines; }
+    // ── Getters & Setters ────────────────────────────────────────────
+    public String getClassName()                          { return className; }
+    public String getSimpleClassName()                    { return simpleClassName; }
+    public String getSourceFile()                         { return sourceFile; }
+    public void   setSourceFile(String sourceFile)        { this.sourceFile = sourceFile; }
+    public LayerType getLayerType()                       { return layerType; }
+    public void   setLayerType(LayerType layerType)       { this.layerType = layerType; }
+    public List<MethodCoverage>  getMethods()             { return methods; }
+    public Map<Integer, Boolean> getLineCoverageMap()     { return lineCoverageMap; }
+    public List<String>          getSourceLines()         { return sourceLines; }
+    public void setSourceLines(List<String> sourceLines)  { this.sourceLines = sourceLines; }
 }
