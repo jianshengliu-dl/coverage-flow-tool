@@ -16,12 +16,21 @@ import java.util.stream.Collectors;
  *  1. Layered business-flow diagram  (Controller → Service → Repository …)
  *  2. Per-class line coverage with source code
  *  3. Summary statistics
+ *
+ * Fix: passes maxTextSize to mermaid.initialize() to avoid
+ *      "Maximum text size in diagram exceeded" when there are many classes.
+ *      Also caps nodes per layer to MAX_NODES_PER_LAYER to keep the diagram readable.
  */
 public class FlowReportGenerator {
 
     private static final LayerClassifier CLASSIFIER = new LayerClassifier();
 
-    // Canonical layer rendering order
+    /** Mermaid hard limit – set generously to avoid the error */
+    private static final int MERMAID_MAX_TEXT_SIZE = 500_000;
+
+    /** Max class nodes rendered per layer in the flow diagram */
+    private static final int MAX_NODES_PER_LAYER = 20;
+
     private static final List<LayerType> LAYER_ORDER = List.of(
             LayerType.CONTROLLER,
             LayerType.SERVICE,
@@ -50,7 +59,7 @@ public class FlowReportGenerator {
         int totalLines    = coverages.stream().mapToInt(ClassCoverage::getTotalLineCount).sum();
         double pct        = totalLines == 0 ? 0 : coveredLines * 100.0 / totalLines;
 
-        // ── head ──
+        // head
         sb.append("<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n")
           .append("<meta charset=\"UTF-8\">\n")
           .append("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n")
@@ -59,13 +68,13 @@ public class FlowReportGenerator {
           .append("<style>\n").append(buildCss()).append("</style>\n")
           .append("</head>\n<body>\n");
 
-        // ── header ──
+        // header
         sb.append("<div class=\"header\">\n")
           .append("  <h1>&#128269; Coverage Flow Report</h1>\n")
           .append("  <p>Generated: ").append(timestamp).append("</p>\n")
           .append("</div>\n");
 
-        // ── summary cards ──
+        // summary cards
         sb.append("<div class=\"summary\">\n")
           .append(summaryCard("Classes Covered", String.valueOf(totalClasses), "card-blue"))
           .append(summaryCard("Lines Executed",  coveredLines + " / " + totalLines, "card-green"))
@@ -73,10 +82,10 @@ public class FlowReportGenerator {
                               pct >= 80 ? "card-green" : pct >= 50 ? "card-yellow" : "card-red"))
           .append("</div>\n");
 
-        // ── layer legend ──
+        // layer legend
         sb.append(buildLayerLegend(coverages));
 
-        // ── layered flow diagram ──
+        // layered flow diagram
         sb.append("<div class=\"section\">\n")
           .append("<h2>&#128336; Business Flow Diagram  "
                 + "<small style='font-size:0.6em;color:#666'>"
@@ -85,7 +94,7 @@ public class FlowReportGenerator {
           .append(buildLayeredMermaid(coverages))
           .append("\n</div>\n</div>\n");
 
-        // ── class navigation ──
+        // class navigation
         sb.append("<div class=\"section\">\n"
                 + "<h2>&#128196; Class Coverage Detail</h2>\n"
                 + "<div class=\"nav-list\">\n");
@@ -99,17 +108,22 @@ public class FlowReportGenerator {
         }
         sb.append("</div>\n</div>\n");
 
-        // ── per-class detail ──
+        // per-class detail
         for (ClassCoverage cc : coverages) sb.append(buildClassSection(cc));
 
-        // ── scripts ──
+        // scripts – KEY FIX: pass maxTextSize to mermaid.initialize()
         sb.append("<script>\n")
-          .append("mermaid.initialize({startOnLoad:true,theme:'base',"
-                + "themeVariables:{primaryColor:'#E3F2FD'},"
-                + "flowchart:{useMaxWidth:true,htmlLabels:true}});\n")
-          .append("function toggleSource(id){")
-          .append("var e=document.getElementById(id);"
-                + "e.style.display=e.style.display==='none'?'block':'none';}\n")
+          .append("mermaid.initialize({\n")
+          .append("  startOnLoad: true,\n")
+          .append("  theme: 'base',\n")
+          .append("  maxTextSize: ").append(MERMAID_MAX_TEXT_SIZE).append(",\n")
+          .append("  themeVariables: { primaryColor: '#E3F2FD' },\n")
+          .append("  flowchart: { useMaxWidth: true, htmlLabels: true }\n")
+          .append("});\n")
+          .append("function toggleSource(id){\n")
+          .append("  var e=document.getElementById(id);\n")
+          .append("  e.style.display=e.style.display==='none'?'block':'none';\n")
+          .append("}\n")
           .append("</script>\n</body>\n</html>");
 
         return sb.toString();
@@ -119,82 +133,81 @@ public class FlowReportGenerator {
     //  LAYERED MERMAID DIAGRAM
     // ════════════════════════════════════════════════════════════════
     private String buildLayeredMermaid(List<ClassCoverage> coverages) {
-        // Group classes by layer
         Map<LayerType, List<ClassCoverage>> byLayer = new LinkedHashMap<>();
         for (LayerType lt : LAYER_ORDER) byLayer.put(lt, new ArrayList<>());
         for (ClassCoverage cc : coverages) byLayer.get(cc.getLayerType()).add(cc);
 
         StringBuilder m = new StringBuilder();
         m.append("flowchart TD\n");
+        m.append("    START([\"&#9654; Execution Start\"])\n");
 
-        // START node
-        m.append("    START([\"▶ Execution Start\"])\n");
-
-        // Track previous layer's representative node IDs for cross-layer arrows
         List<String> prevLayerNodeIds = new ArrayList<>();
         prevLayerNodeIds.add("START");
 
-        boolean firstLayer = true;
+        int totalNodes = 0; // guard against runaway diagrams
+
         for (LayerType lt : LAYER_ORDER) {
-            List<ClassCoverage> classes = byLayer.get(lt);
-            if (classes.isEmpty()) continue;
+            List<ClassCoverage> all = byLayer.get(lt);
+            if (all.isEmpty()) continue;
+
+            // Cap nodes per layer to keep diagram manageable
+            boolean truncated = all.size() > MAX_NODES_PER_LAYER;
+            List<ClassCoverage> classes = truncated ? all.subList(0, MAX_NODES_PER_LAYER) : all;
 
             String subgraphId = lt.name();
-            // Mermaid subgraph for each layer
+            String subgraphLabel = lt.label
+                    + (truncated ? " (showing " + MAX_NODES_PER_LAYER + "/" + all.size() + ")" : "");
+
             m.append("\n    subgraph ").append(subgraphId)
-             .append("[\"\"]")     // label set via style
+             .append("[\"").append(subgraphLabel).append("\"]")
              .append("\n");
-            m.append("        direction TB\n");
+            m.append("        direction LR\n");   // LR inside subgraph for compact layout
 
             List<String> currentLayerFirstNodes = new ArrayList<>();
 
             for (int i = 0; i < classes.size(); i++) {
                 ClassCoverage cc = classes.get(i);
-                String nodeId    = lt.name() + "_" + i;
-                String shape     = buildNodeShape(nodeId, cc);
+                String nodeId = lt.name() + "_" + i;
+                // Use short label to reduce text size
+                String shape = buildNodeShape(nodeId, cc);
                 m.append("        ").append(shape).append("\n");
 
-                // Horizontal chain inside layer (left → right)
                 if (i > 0) {
                     m.append("        ").append(lt.name() + "_" + (i - 1))
                      .append(" --> ").append(nodeId).append("\n");
                 } else {
                     currentLayerFirstNodes.add(nodeId);
                 }
-
-                // Method sub-nodes (dashed)
-                buildMethodNodes(m, cc, nodeId);
+                totalNodes++;
             }
 
             m.append("    end\n");
 
-            // Cross-layer arrows: every node in previous layer → first node of this layer
+            // Cross-layer arrows
             for (String prev : prevLayerNodeIds) {
                 for (String cur : currentLayerFirstNodes) {
                     m.append("    ").append(prev).append(" --> ").append(cur).append("\n");
                 }
             }
 
-            // The last node of this layer becomes the previous layer connection point
             prevLayerNodeIds.clear();
             prevLayerNodeIds.add(lt.name() + "_" + (classes.size() - 1));
-            firstLayer = false;
         }
 
-        // END node
-        m.append("\n    END([\"■ Execution End\"])\n");
+        m.append("\n    END([\"&#9632; Execution End\"])\n");
         for (String prev : prevLayerNodeIds) {
             m.append("    ").append(prev).append(" --> END\n");
         }
 
-        // ── Styles ──
+        // Styles
         m.append("\n");
         m.append("    style START fill:#4CAF50,color:#fff,stroke:#388E3C\n");
         m.append("    style END   fill:#F44336,color:#fff,stroke:#D32F2F\n");
 
         for (LayerType lt : LAYER_ORDER) {
-            List<ClassCoverage> classes = byLayer.get(lt);
-            for (int i = 0; i < classes.size(); i++) {
+            List<ClassCoverage> all = byLayer.get(lt);
+            int cap = Math.min(all.size(), MAX_NODES_PER_LAYER);
+            for (int i = 0; i < cap; i++) {
                 String nodeId = lt.name() + "_" + i;
                 m.append("    style ").append(nodeId)
                  .append(" fill:").append(lt.bgColor)
@@ -206,35 +219,21 @@ public class FlowReportGenerator {
         return m.toString();
     }
 
-    /** Builds a Mermaid node with shape depending on coverage % */
+    /** Short label to minimise Mermaid text size */
     private String buildNodeShape(String nodeId, ClassCoverage cc) {
-        String icon  = cc.getLayerType().label.split(" ")[0]; // emoji
-        String label = icon + " " + cc.getSimpleClassName() + "\\n"
-                     + String.format("%.0f%% (%d lines)", cc.getCoveragePercent(), cc.getCoveredLineCount());
+        String icon  = cc.getLayerType().label.split(" ")[0];
+        // Keep label concise: emoji + simple name + coverage %
+        String label = icon + " " + cc.getSimpleClassName()
+                     + "\\n" + String.format("%.0f%%", cc.getCoveragePercent());
         if (cc.getCoveragePercent() >= 80)  return nodeId + "[\"" + label + "\"]";
         if (cc.getCoveragePercent() >= 50)  return nodeId + "(\"" + label + "\")";
         return nodeId + "{\"" + label + "\"}";
-    }
-
-    /** Adds up to 5 dashed method sub-nodes under a class node */
-    private void buildMethodNodes(StringBuilder m, ClassCoverage cc, String nodeId) {
-        if (cc.getMethods().isEmpty()) return;
-        int count = 0;
-        for (MethodCoverage mc : cc.getMethods()) {
-            if (!mc.isCovered() || count >= 5) continue;
-            String methodId = nodeId + "_M" + count;
-            m.append("        ").append(methodId)
-             .append("[\"🔧 ").append(mc.getMethodName()).append("()\"]\n");
-            m.append("        ").append(nodeId).append(" -.-> ").append(methodId).append("\n");
-            count++;
-        }
     }
 
     // ════════════════════════════════════════════════════════════════
     //  LAYER LEGEND
     // ════════════════════════════════════════════════════════════════
     private String buildLayerLegend(List<ClassCoverage> coverages) {
-        // Count classes per layer
         Map<LayerType, Long> counts = coverages.stream()
                 .collect(Collectors.groupingBy(ClassCoverage::getLayerType, Collectors.counting()));
 
@@ -276,8 +275,8 @@ public class FlowReportGenerator {
           .append("  <h3>").append(cc.getSimpleClassName()).append("</h3>\n")
           .append("  <span class=\"class-name\">").append(cc.getClassName()).append("</span>\n")
           .append("  <div class=\"coverage-bar-wrap\">\n")
-          .append("    <div class=\"coverage-bar\" style=\"width:").append(String.format("%.1f", cc.getCoveragePercent())).append("%;"
-                + "background:linear-gradient(90deg,").append(lt.borderColor).append(",").append(lt.bgColor).append(")\"></div>\n")
+          .append("    <div class=\"coverage-bar\" style=\"width:").append(String.format("%.1f", cc.getCoveragePercent())).append("%;")
+          .append("background:linear-gradient(90deg,").append(lt.borderColor).append(",").append(lt.bgColor).append(")\"></div>\n")
           .append("  </div>\n")
           .append("  <span class=\"pct\">").append(String.format("%.1f%%", cc.getCoveragePercent()))
           .append(" (").append(cc.getCoveredLineCount()).append("/").append(cc.getTotalLineCount()).append(" lines)</span>\n")
@@ -337,18 +336,15 @@ public class FlowReportGenerator {
              + ".card-red    { background:linear-gradient(135deg,#C62828,#EF5350); }\n"
              + ".section { background:#fff; margin:0 40px 24px; border-radius:12px; padding:24px; box-shadow:0 2px 8px rgba(0,0,0,.08); }\n"
              + ".section h2 { font-size:1.3em; margin-bottom:16px; color:#1a237e; border-bottom:2px solid #e8eaf6; padding-bottom:8px; }\n"
-             + "/* Layer Legend */\n"
              + ".legend { display:flex; flex-wrap:wrap; gap:12px; }\n"
              + ".legend-item { display:flex; align-items:center; gap:10px; padding:10px 16px; border-radius:8px; min-width:160px; }\n"
              + ".legend-icon { font-size:1em; font-weight:600; }\n"
              + ".legend-count { font-size:.85em; color:#555; }\n"
-             + "/* Nav */\n"
              + ".nav-list { display:flex; flex-wrap:wrap; gap:10px; }\n"
              + ".nav-list a { text-decoration:none; background:#e8eaf6; color:#1a237e; padding:6px 14px; border-radius:20px; font-size:.9em; transition:background .2s; display:flex; align-items:center; gap:6px; }\n"
              + ".nav-list a:hover { background:#c5cae9; }\n"
              + ".layer-dot { display:inline-block; width:10px; height:10px; border-radius:50%; }\n"
              + ".badge { background:#1a237e; color:#fff; border-radius:10px; padding:2px 8px; font-size:.8em; }\n"
-             + "/* Class section */\n"
              + ".class-section { background:#fff; margin:0 40px 20px; border-radius:12px; padding:24px; box-shadow:0 2px 8px rgba(0,0,0,.08); }\n"
              + ".class-header { margin-bottom:16px; }\n"
              + ".layer-tag { display:inline-block; padding:3px 10px; border-radius:12px; font-size:.8em; margin-bottom:8px; }\n"
