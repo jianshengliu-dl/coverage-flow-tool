@@ -1,0 +1,6 @@
+Manifest-Version: 1.0
+Premain-Class: com.tracer.agent.TracerAgent
+Can-Retransform-Classes: true
+Can-Set-Native-Method-Prefix: false
+Implementation-Title: Tracer Agent
+Implementation-Version: 1.0.0
