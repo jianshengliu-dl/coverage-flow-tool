@@ -1,183 +1,184 @@
 package com.tracer.analyzer;
 
-import com.tracer.model.CallEdge;
-import com.tracer.model.ClassCoverage;
+import com.tracer.model.ExecutionTrace;
+import com.tracer.model.MethodCall;
+import com.tracer.model.ClassNode;
 
 import java.util.*;
-import java.util.regex.*;
 
 /**
- * Analyzes Java source lines stored in ClassCoverage objects to extract
- * real method-level call edges between covered classes.
- *
- * Strategy (regex-based, no external library needed):
- *  1. Scan field declarations  -> build fieldName -> SimpleClassName map
- *  2. Track current method name as we scan lines
- *  3. For each EXECUTED source line inside a method:
- *     - Look for  fieldName.methodName(  or  ClassName.methodName(  patterns
- *     - Resolve to a covered class -> emit CallEdge
+ * Analyzes method call chains from execution trace.
+ * Builds class relationships and call flow.
  */
 public class CallChainAnalyzer {
+    private ExecutionTrace trace;
+    private Map<String, ClassNode> classNodeMap;
+    private List<MethodCall> callChain;
 
-    // Method declaration: captures method name in group 1
-    private static final Pattern METHOD_DECL = Pattern.compile(
-        "^\\s*(?:(?:public|private|protected|static|final|synchronized|abstract|default|native)\\s+)*"
-        + "(?:[\\w<>\\[\\],?\\s]+?)\\s+(\\w+)\\s*\\(");
-
-    // Field declaration: Type fieldName; or Type fieldName =
-    private static final Pattern FIELD_DECL = Pattern.compile(
-        "^\\s*(?:(?:private|protected|public|static|final|volatile|transient)\\s+)*"
-        + "([A-Z]\\w+)(?:<[^>]*>)?\\s+(\\w+)\\s*[;=,)]");
-
-    // Method call: receiver.method(
-    private static final Pattern METHOD_CALL = Pattern.compile(
-        "(?<![\\w.])([a-zA-Z_$][\\w$]*)\\.(\\w+)\\s*\\(");
-
-    private static final Set<String> NOISE_RECEIVERS = new HashSet<>(Arrays.asList(
-        "logger", "log", "system", "string", "integer", "long", "double", "boolean",
-        "math", "objects", "optional", "list", "map", "set", "arraylist", "hashmap",
-        "collections", "arrays", "stringbuilder", "stringutils", "collectionutils",
-        "this", "super", "stream", "collectors", "localdatetime", "localdate",
-        "instant", "duration", "thread", "object"
-    ));
-
-    private static final Set<String> JAVA_KEYWORDS = new HashSet<>(Arrays.asList(
-        "if", "else", "for", "while", "do", "switch", "case", "return", "try",
-        "catch", "finally", "throw", "throws", "new", "this", "super", "class",
-        "interface", "enum", "extends", "implements", "import", "package",
-        "void", "int", "long", "double", "float", "boolean", "byte", "char", "short",
-        "static", "final", "abstract", "public", "private", "protected", "synchronized"
-    ));
-
-    public List<CallEdge> analyze(List<ClassCoverage> coverages) {
-        Map<String, ClassCoverage> bySimpleName = new LinkedHashMap<>();
-        for (ClassCoverage cc : coverages) {
-            bySimpleName.put(cc.getSimpleClassName(), cc);
-        }
-
-        Set<CallEdge> edges = new LinkedHashSet<>();
-        for (ClassCoverage caller : coverages) {
-            if (caller.getSourceLines().isEmpty()) continue;
-            try {
-                analyzeClass(caller, bySimpleName, edges);
-            } catch (Exception ignored) {}
-        }
-        return new ArrayList<>(edges);
+    public CallChainAnalyzer(ExecutionTrace trace) {
+        this.trace = trace;
+        this.classNodeMap = new LinkedHashMap<>();
+        this.callChain = trace.getMethodCalls();
     }
 
-    private void analyzeClass(ClassCoverage caller,
-                               Map<String, ClassCoverage> bySimpleName,
-                               Set<CallEdge> edges) {
-        List<String> lines = caller.getSourceLines();
-        Map<Integer, Boolean> covMap = caller.getLineCoverageMap();
+    /**
+     * Analyze the entire execution trace and build class relationships
+     */
+    public Map<String, ClassNode> analyze() {
+        if (callChain.isEmpty()) {
+            return classNodeMap;
+        }
 
-        // Step 1: build field map
-        Map<String, String> fieldTypes = buildFieldTypeMap(lines, bySimpleName);
+        // First pass: create all class nodes
+        for (MethodCall call : callChain) {
+            String className = call.getClassName();
+            if (!classNodeMap.containsKey(className)) {
+                ClassNode node = new ClassNode(className);
+                node.setOrder(classNodeMap.size());
+                classNodeMap.put(className, node);
+            }
+        }
 
-        // Step 2: scan line by line
-        String currentMethod = "<init>";
-        boolean insideMethod = false;
-        int braceDepth = 0;
-        int classBraceDepth = -1;
+        // Second pass: build relationships
+        for (int i = 0; i < callChain.size() - 1; i++) {
+            MethodCall current = callChain.get(i);
+            MethodCall next = callChain.get(i + 1);
 
-        for (int i = 0; i < lines.size(); i++) {
-            String raw  = lines.get(i);
-            String line = raw.trim();
-            int lineNum = i + 1;
+            ClassNode currentClass = classNodeMap.get(current.getClassName());
+            ClassNode nextClass = classNodeMap.get(next.getClassName());
 
-            // Detect class opening brace
-            if (classBraceDepth < 0) {
-                if (line.contains("class ") || line.contains("interface ") || line.contains("enum ")) {
-                    int opens  = countChar(line, '{');
-                    int closes = countChar(line, '}');
-                    if (opens > closes) {
-                        classBraceDepth = opens - closes;
-                        braceDepth = classBraceDepth;
-                        continue;
-                    }
+            // If depth increases, current calls next
+            if (next.getDepth() > current.getDepth()) {
+                currentClass.addCallee(nextClass);
+                nextClass.addCaller(currentClass);
+            }
+
+            currentClass.addMethodCalled(current.getMethodName());
+        }
+
+        // Record last method
+        if (!callChain.isEmpty()) {
+            MethodCall lastCall = callChain.get(callChain.size() - 1);
+            ClassNode lastClass = classNodeMap.get(lastCall.getClassName());
+            lastClass.addMethodCalled(lastCall.getMethodName());
+        }
+
+        // Count invocations
+        for (MethodCall call : callChain) {
+            ClassNode node = classNodeMap.get(call.getClassName());
+            node.incrementInvocationCount();
+        }
+
+        return classNodeMap;
+    }
+
+    /**
+     * Get classes sorted by invocation frequency (most called first)
+     */
+    public List<ClassNode> getClassesByInvocationCount() {
+        List<ClassNode> sorted = new ArrayList<>(classNodeMap.values());
+        sorted.sort((a, b) -> Integer.compare(b.getInvocationCount(), a.getInvocationCount()));
+        return sorted;
+    }
+
+    /**
+     * Get entry point class (first class in execution)
+     */
+    public ClassNode getEntryClass() {
+        String entryClassName = trace.getEntryClass();
+        return classNodeMap.get(entryClassName);
+    }
+
+    /**
+     * Get exit point class (last class in execution)
+     */
+    public ClassNode getExitClass() {
+        if (callChain.isEmpty()) return null;
+        String exitClassName = callChain.get(callChain.size() - 1).getClassName();
+        return classNodeMap.get(exitClassName);
+    }
+
+    /**
+     * Find call path between two classes
+     */
+    public List<ClassNode> findCallPath(String fromClass, String toClass) {
+        ClassNode start = classNodeMap.get(fromClass);
+        ClassNode end = classNodeMap.get(toClass);
+
+        if (start == null || end == null) {
+            return new ArrayList<>();
+        }
+
+        // BFS to find shortest path
+        Queue<ClassNode> queue = new LinkedList<>();
+        Map<ClassNode, ClassNode> parent = new HashMap<>();
+        Set<ClassNode> visited = new HashSet<>();
+
+        queue.add(start);
+        visited.add(start);
+
+        while (!queue.isEmpty()) {
+            ClassNode current = queue.poll();
+            if (current.equals(end)) {
+                // Reconstruct path
+                List<ClassNode> path = new ArrayList<>();
+                ClassNode node = end;
+                while (node != null) {
+                    path.add(0, node);
+                    node = parent.get(node);
                 }
-                braceDepth += countChar(line, '{') - countChar(line, '}');
-                continue;
+                return path;
             }
 
-            // Method declaration?
-            String detected = detectMethodName(raw);
-            if (detected != null && line.contains("{")) {
-                currentMethod = detected;
-                insideMethod  = true;
-            }
-
-            // Track brace depth
-            braceDepth += countChar(line, '{') - countChar(line, '}');
-            if (braceDepth <= classBraceDepth) {
-                insideMethod = false;
-            }
-
-            if (!insideMethod) continue;
-
-            // Only executed lines
-            Boolean executed = covMap.get(lineNum);
-            if (executed == null || !executed) continue;
-
-            // Step 3: find method calls
-            Matcher m = METHOD_CALL.matcher(raw);
-            while (m.find()) {
-                String receiver    = m.group(1);
-                String calledMeth  = m.group(2);
-
-                if (NOISE_RECEIVERS.contains(receiver.toLowerCase())) continue;
-                if (JAVA_KEYWORDS.contains(receiver)) continue;
-                if (receiver.length() <= 1) continue;
-
-                String targetClass = resolveClass(receiver, fieldTypes, bySimpleName);
-                if (targetClass == null) continue;
-                if (targetClass.equals(caller.getSimpleClassName())) continue;
-
-                edges.add(new CallEdge(
-                    caller.getSimpleClassName(), currentMethod,
-                    targetClass, calledMeth));
+            for (ClassNode callee : current.getCallees()) {
+                if (!visited.contains(callee)) {
+                    visited.add(callee);
+                    parent.put(callee, current);
+                    queue.add(callee);
+                }
             }
         }
+
+        return new ArrayList<>(); // No path found
     }
 
-    private Map<String, String> buildFieldTypeMap(List<String> lines,
-                                                   Map<String, ClassCoverage> bySimpleName) {
-        Map<String, String> map = new LinkedHashMap<>();
-        for (String raw : lines) {
-            Matcher m = FIELD_DECL.matcher(raw);
-            if (m.find()) {
-                String type  = m.group(1);
-                String field = m.group(2);
-                if (bySimpleName.containsKey(type)) map.put(field, type);
+    /**
+     * Get all classes that directly or indirectly call a given class
+     */
+    public Set<ClassNode> getCallers(String className) {
+        ClassNode target = classNodeMap.get(className);
+        Set<ClassNode> result = new HashSet<>();
+        if (target == null) return result;
+
+        Queue<ClassNode> queue = new LinkedList<>(target.getCallers());
+        while (!queue.isEmpty()) {
+            ClassNode caller = queue.poll();
+            if (result.add(caller)) {
+                queue.addAll(caller.getCallers());
             }
         }
-        return map;
+        return result;
     }
 
-    private String detectMethodName(String line) {
-        String t = line.trim();
-        if (t.startsWith("@") || t.startsWith("//") || t.startsWith("*")) return null;
-        if (t.contains("class ") || t.contains("interface ") || t.contains("enum ")) return null;
-        if (!t.contains("(")) return null;
-        Matcher m = METHOD_DECL.matcher(line);
-        if (m.find()) {
-            String name = m.group(1);
-            if (JAVA_KEYWORDS.contains(name)) return null;
-            return name;
+    /**
+     * Get all classes that are directly or indirectly called by a given class
+     */
+    public Set<ClassNode> getCallees(String className) {
+        ClassNode target = classNodeMap.get(className);
+        Set<ClassNode> result = new HashSet<>();
+        if (target == null) return result;
+
+        Queue<ClassNode> queue = new LinkedList<>(target.getCallees());
+        while (!queue.isEmpty()) {
+            ClassNode callee = queue.poll();
+            if (result.add(callee)) {
+                queue.addAll(callee.getCallees());
+            }
         }
-        return null;
+        return result;
     }
 
-    private String resolveClass(String receiver,
-                                 Map<String, String> fieldTypes,
-                                 Map<String, ClassCoverage> bySimpleName) {
-        if (bySimpleName.containsKey(receiver)) return receiver;  // static call
-        return fieldTypes.get(receiver);                          // field call
-    }
-
-    private int countChar(String s, char c) {
-        int n = 0;
-        for (char ch : s.toCharArray()) if (ch == c) n++;
-        return n;
+    public Map<String, ClassNode> getClassNodeMap() {
+        return classNodeMap;
     }
 }
