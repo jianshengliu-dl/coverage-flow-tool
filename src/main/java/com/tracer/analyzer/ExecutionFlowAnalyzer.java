@@ -41,7 +41,6 @@ public class ExecutionFlowAnalyzer {
         List<MethodCall> criticalPath = new ArrayList<>();
         long maxDuration = 0;
 
-        // Simple heuristic: find the path with maximum total duration
         int i = 0;
         while (i < calls.size()) {
             List<MethodCall> path = new ArrayList<>();
@@ -53,7 +52,6 @@ public class ExecutionFlowAnalyzer {
                 path.add(call);
                 pathDuration += call.getDuration();
 
-                // Move to next at same or lower depth
                 if (i + 1 < calls.size() && calls.get(i + 1).getDepth() <= startDepth) {
                     break;
                 }
@@ -129,23 +127,17 @@ public class ExecutionFlowAnalyzer {
      */
     public Map<String, Integer> getCallCountByClass() {
         Map<String, Integer> result = new LinkedHashMap<>();
+        Map<String, Long> counts = new HashMap<>();
+        
         for (MethodCall call : calls) {
             String className = call.getClassName();
-            result.put(className, result.getOrDefault(className, 0) + 1);
+            counts.put(className, counts.getOrDefault(className, 0L) + 1);
         }
-        // Sort by count descending
-        result = new LinkedHashMap<>();
-        calls.stream()
-                .map(MethodCall::getClassName)
-                .distinct()
-                .sorted((a, b) -> Integer.compare(
-                        calls.stream().filter(c -> c.getClassName().equals(b)).toArray().length,
-                        calls.stream().filter(c -> c.getClassName().equals(a)).toArray().length
-                ))
-                .forEach(c -> {
-                    long count = calls.stream().filter(m -> m.getClassName().equals(c)).count();
-                    result.put(c, (int) count);
-                });
+        
+        counts.entrySet().stream()
+                .sorted((a, b) -> Long.compare(b.getValue(), a.getValue()))
+                .forEach(e -> result.put(e.getKey(), e.getValue().intValue()));
+        
         return result;
     }
 

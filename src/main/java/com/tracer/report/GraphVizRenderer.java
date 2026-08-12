@@ -18,17 +18,17 @@ public class GraphVizRenderer {
     public String render() {
         StringBuilder dot = new StringBuilder();
         
-        dot.append("digraph ExecutionFlow {\\n");
-        dot.append("rankdir=TB;\\n");
-        dot.append("node [shape=box, style=rounded, fillcolor=\\\"#e7f3ff\\\", color=\\\"#0066cc\\\"];\\n");
+        dot.append("digraph ExecutionFlow {\n");
+        dot.append("rankdir=TB;\n");
+        dot.append("node [shape=box, style=rounded, fillcolor=\"#e7f3ff\", color=\"#0066cc\"];\n");
 
         for (ClassNode node : graphBuilder.getNodes()) {
             String nodeId = sanitizeNodeId(node.getClassName());
             String label = node.getSimpleClassName() + " (" + node.getInvocationCount() + " calls)";
-            dot.append(nodeId).append(" [label=\"").append(label).append("\"];\\n");
+            dot.append(nodeId).append(" [label=\"").append(label).append("\"];\n");
         }
 
-        dot.append("\\n");
+        dot.append("\n");
 
         Set<String> addedEdges = new HashSet<>();
         for (ClassGraphBuilder.ClassEdge edge : graphBuilder.getEdges()) {
@@ -37,13 +37,12 @@ public class GraphVizRenderer {
             String edgeKey = fromId + "->" + toId;
 
             if (!addedEdges.contains(edgeKey)) {
-                dot.append(fromId).append(" -> ").append(toId).append(";\
-");
+                dot.append(fromId).append(" -> ").append(toId).append(";").append("\n");
                 addedEdges.add(edgeKey);
             }
         }
 
-        dot.append("}\\n");
+        dot.append("}\n");
         return dot.toString();
     }
 
